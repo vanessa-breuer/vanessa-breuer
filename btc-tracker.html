@@ -703,22 +703,46 @@ async function init() {
   const errorDiv  = document.getElementById('error-msg');
   const srcEl     = document.getElementById('data-source');
 
+  // fetchWithTimeout wraps fetch with an AbortController deadline
+  function fetchWithTimeout(url, ms = 10000) {
+    const ctrl = new AbortController();
+    const id = setTimeout(() => ctrl.abort(), ms);
+    return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(id));
+  }
+
   try {
-    const res = await fetch(
-      'https://api.coingecko.com/api/v3/coins/bitcoin/market_chart' +
-      '?vs_currency=usd&days=366&interval=daily',
-      { headers: { Accept: 'application/json' } }
-    );
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const json = await res.json();
+    let dates = [], prices = [], source = '';
+
+    // ── 1. Try Binance (permissive CORS, no auth needed) ──────────────────
+    try {
+      const res = await fetchWithTimeout(
+        'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=366'
+      );
+      if (!res.ok) throw new Error('Binance HTTP ' + res.status);
+      const klines = await res.json();
+      // klines[i] = [openTime, open, high, low, close, ...]
+      dates  = klines.map(k => new Date(k[0]).toISOString().slice(0, 10));
+      prices = klines.map(k => parseFloat(k[4]));
+      source = 'Source: Binance · Delayed T-1 · USDT';
+    } catch (e1) {
+      // ── 2. Fallback: CoinGecko ────────────────────────────────────────
+      const res = await fetchWithTimeout(
+        'https://api.coingecko.com/api/v3/coins/bitcoin/market_chart' +
+        '?vs_currency=usd&days=366&interval=daily'
+      );
+      if (!res.ok) throw new Error('CoinGecko HTTP ' + res.status);
+      const json = await res.json();
+      const raw = json.prices.slice(-366);
+      dates  = raw.map(p => new Date(p[0]).toISOString().slice(0, 10));
+      prices = raw.map(p => p[1]);
+      source = 'Source: CoinGecko · Delayed T-1 · USD';
+    }
 
     loading.style.display = 'none';
-    srcEl.textContent = 'Source: CoinGecko · Delayed T-1 · USD';
+    srcEl.textContent = source;
 
-    // Parse: take last 366 entries; daily candles arrive at midnight UTC
-    const raw = json.prices.slice(-366);
-    priceDates  = raw.map(p => new Date(p[0]).toISOString().slice(0, 10));
-    priceValues = raw.map(p => p[1]);
+    priceDates  = dates;
+    priceValues = prices;
 
     // Current price display
     const last = priceValues[priceValues.length - 1];
